@@ -1,6 +1,43 @@
 #include "rip.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <stdio.h>
+
+uint32_t BEtoLE(const uint8_t* ptr){
+	uint32_t ans = ptr[0];
+	for(int i = 0; i < 3; i++){
+		ans <<= 8;
+		ptr++;
+		ans |= ptr[0];
+	}
+	return ans;
+}
+
+bool checkMask(const uint8_t* ptr){
+	uint32_t mask = BEtoLE(ptr);
+	while(mask & 0x80000000)
+		mask <<= 1;
+	return mask == 0;
+}
+
+uint32_t decodeBE(const uint8_t* ptr){
+	ptr += 3;
+	uint32_t ans = *ptr;
+	for(int i = 0; i < 3; i++){
+		ans <<= 8;
+		ptr--;
+		ans |= *ptr;
+	}
+	return ans;
+}
+
+void encodeBE(uint8_t* dst, uint32_t value){
+	for(int i = 0; i < 4; i++){
+		*dst = value & 0xff;
+		dst++;
+		value >>= 8;
+	}
+}
 
 /*
   在头文件 rip.h 中定义了如下的结构体：
@@ -44,8 +81,54 @@
  * Mask 的二进制是不是连续的 1 与连续的 0 组成等等。
  */
 bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
-  // TODO:
-  return false;
+	uint16_t totalLength = (packet[2] << 8) + packet[3];
+	// printf("totalLength: %hu\n", totalLength);
+	if(totalLength > len)
+		return false;
+	const uint8_t* ptr = packet;
+	uint8_t headerLength = (packet[0] & 0xf) << 2;
+	// printf("headerLength: %hhu\n", headerLength);
+	// skip the IP header
+	ptr += headerLength; 
+	totalLength -= headerLength;
+	// skip UDP
+	ptr += 8;
+	totalLength -= 8;
+	// check RIP2 header
+	if(ptr[0] != 1 && ptr[0] != 2) // invalid Command
+		return false;
+	if(ptr[1] != 2) // invalid Version
+		return false;
+	if(ptr[2] != 0 || ptr[3] != 0) // invalid ZERO
+		return false;
+	uint8_t cmd = ptr[0];
+	output->command = cmd; // store Command
+	// skip RIP2 header
+	ptr += 4;
+	totalLength -= 4;
+	int pos = 0;
+	// Command = 1, Request, Family = 0
+	// Command = 0, Response, Family = 2
+	while(totalLength >= 20 && pos < RIP_MAX_ENTRY){ // check Route Entries
+		if(ptr[0] != 0 || cmd == 1 && ptr[1] != 0 || cmd == 0 && ptr[1] != 2) // invalid Family
+			return false;
+		if(ptr[2] != 0 || ptr[3] != 0) // invalid Tag
+			return false;
+		if(!checkMask(ptr + 8)) // invalid Mask
+			return false;
+		if(ptr[16] != 0 || ptr[17] != 0 || ptr[18] != 0 || ptr[19] == 0 || ptr[19] > 16) // invalid Metric
+			return false;
+		uint32_t* ptr32 = (uint32_t*)ptr;
+		output->entries[pos].addr = decodeBE(ptr + 4);
+		output->entries[pos].mask = decodeBE(ptr + 8);
+		output->entries[pos].nexthop = decodeBE(ptr + 12);
+		output->entries[pos].metric = decodeBE(ptr + 16);
+		pos++;
+		ptr += 20; // 5 words
+		totalLength -= 20;
+	}
+	output->numEntries = pos;
+	return true;
 }
 
 /**
@@ -59,6 +142,31 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
  * 需要注意一些没有保存在 RipPacket 结构体内的数据的填写。
  */
 uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
-  // TODO:
-  return 0;
+	uint8_t* ptr = buffer;
+	ptr[0] = rip->command;
+	ptr[1] = 2; // version
+	ptr[2] = ptr[3] = 0; // ZERO
+	// skip RIP2 header
+	ptr += 4;
+	uint32_t entryCount = rip->numEntries;
+	uint8_t family = rip->command == 1 ? 0 : 2;
+	for(int i = 0; i < entryCount; i++){
+		// set family
+		ptr[0] = 0;
+		ptr[1] = family;
+		// set tag
+		ptr[2] = ptr[3] = 0;
+		uint32_t* ptr32 = (uint32_t*)ptr;
+		// set IP
+		encodeBE(ptr + 4, rip->entries[i].addr);
+		// set mask
+		encodeBE(ptr + 8, rip->entries[i].mask);
+		// set nexthop
+		encodeBE(ptr + 12, rip->entries[i].nexthop);
+		// set metric
+		encodeBE(ptr + 16, rip->entries[i].metric);
+		
+		ptr += 20; // 5 words
+	}
+	return 4 + 20 * entryCount;
 }

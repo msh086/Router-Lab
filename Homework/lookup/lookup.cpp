@@ -1,7 +1,20 @@
 #include "router.h"
 #include <stdint.h>
 #include <stdlib.h>
+#include <vector>
+#include <stdio.h>
 
+std::vector<RoutingTableEntry> RoutingTable;
+
+uint32_t masks[33] = {0x0,
+	0x1, 0x3, 0x7, 0xf, 
+	0x1f, 0x3f, 0x7f, 0xff, 
+	0x1ff, 0x3ff, 0x7ff, 0xfff, 
+	0x1fff, 0x3fff, 0x7fff, 0xffff, 
+	0x1ffff, 0x3ffff, 0x7ffff, 0xfffff, 
+	0x1fffff, 0x3fffff, 0x7fffff, 0xffffff, 
+	0x1ffffff, 0x3ffffff, 0x7ffffff, 0xfffffff, 
+	0x1fffffff, 0x3fffffff, 0x7fffffff, 0xffffffff};
 /*
   RoutingTable Entry 的定义如下：
   typedef struct {
@@ -27,7 +40,22 @@
  * 删除时按照 addr 和 len 匹配。
  */
 void update(bool insert, RoutingTableEntry entry) {
-  // TODO:
+	int length = RoutingTable.size();
+	for(int i = 0; i < length; i++){
+		if(RoutingTable[i].addr == entry.addr && RoutingTable[i].len == entry.len){
+			if(insert)
+				RoutingTable[i] = entry;
+			else
+				RoutingTable.erase(RoutingTable.begin() + i);
+			return;
+		}
+	}
+	if(insert)
+		RoutingTable.push_back(entry);
+}
+
+uint8_t CommonPrefixLength(uint32_t addr1, uint32_t addr2, int len){
+	return (addr1 & masks[len]) == addr2 ? len : 0;
 }
 
 /**
@@ -38,8 +66,19 @@ void update(bool insert, RoutingTableEntry entry) {
  * @return 查到则返回 true ，没查到则返回 false
  */
 bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
-  // TODO:
-  *nexthop = 0;
-  *if_index = 0;
-  return false;
+	uint8_t maxMatch = 0;
+	int matchIndex = -1;
+	int length = RoutingTable.size();
+	for(int i = 0; i < length; i++){
+		int tmpMatch = CommonPrefixLength(addr, RoutingTable[i].addr, RoutingTable[i].len);
+		if(tmpMatch > maxMatch){
+			maxMatch = tmpMatch;
+			matchIndex = i;
+		}
+	}
+	if(maxMatch == 0)
+		return false;
+	*nexthop = RoutingTable[matchIndex].nexthop;
+	*if_index = RoutingTable[matchIndex].if_index;
+	return true;
 }
