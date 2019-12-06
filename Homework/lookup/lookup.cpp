@@ -39,18 +39,35 @@ uint32_t masks[33] = {0x0,
  * 插入时如果已经存在一条 addr 和 len 都相同的表项，则替换掉原有的。
  * 删除时按照 addr 和 len 匹配。
  */
-void update(bool insert, RoutingTableEntry entry) {
+void update(bool insert, const RoutingTableEntry& entry) {
 	int length = RoutingTable.size();
 	for(int i = 0; i < length; i++){
 		if(RoutingTable[i].addr == entry.addr && RoutingTable[i].len == entry.len){
-			if(insert)
-				RoutingTable[i] = entry;
+			if(insert){
+				// the same route path.
+				if(RoutingTable[i].nexthop == entry.nexthop){
+					// different metric, use the latest one
+					if(RoutingTable[i].metric != entry.metric)
+						RoutingTable[i] = entry;
+					// simply reset timer without setting the change flag
+					else
+						RoutingTable[i].timestamp = entry.timestamp;
+				}
+				// different route path. use the better one
+				else if(RoutingTable[i].metric > entry.metric)
+					RoutingTable[i] = entry;
+				// from different router but have same metric
+				// if the existing entry is halfway to timeout, use the newer one
+				else if(entry.timestamp - RoutingTable[i].timestamp > 90 * 1000)
+					RoutingTable[i] = entry;
+			}
 			else
 				RoutingTable.erase(RoutingTable.begin() + i);
 			return;
 		}
 	}
-	if(insert)
+	// ignore entry with metric of 16, since it means unreachable
+	if(insert && entry.metric < 16)
 		RoutingTable.push_back(entry);
 }
 
