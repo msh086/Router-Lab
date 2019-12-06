@@ -47,10 +47,16 @@ void update(bool insert, const RoutingTableEntry& entry) {
 				// the same route path.
 				if(RoutingTable[i].nexthop == entry.nexthop){
 					// different metric, use the latest one
-					if(RoutingTable[i].metric != entry.metric)
+					if(RoutingTable[i].metric != entry.metric){
 						RoutingTable[i] = entry;
+						// if the new entry marks the route as unreachable
+						// timeout immediately and enter deletion
+						if(entry.metric == 16)
+							RoutingTable[i].timestamp -= 180 * 1000;
+					}
 					// simply reset timer without setting the change flag
-					else
+					// if already unreachable, don't reset timer
+					else if(RoutingTable[i].metric != 16)
 						RoutingTable[i].timestamp = entry.timestamp;
 				}
 				// different route path. use the better one
@@ -58,7 +64,8 @@ void update(bool insert, const RoutingTableEntry& entry) {
 					RoutingTable[i] = entry;
 				// from different router but have same metric
 				// if the existing entry is halfway to timeout, use the newer one
-				else if(entry.timestamp - RoutingTable[i].timestamp > 90 * 1000)
+				// if already unreachable, leave it alone
+				else if(entry.metric != 16 && entry.timestamp - RoutingTable[i].timestamp > 90 * 1000)
 					RoutingTable[i] = entry;
 			}
 			else
@@ -88,7 +95,8 @@ bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index) {
 	int length = RoutingTable.size();
 	for(int i = 0; i < length; i++){
 		int tmpMatch = CommonPrefixLength(addr, RoutingTable[i].addr, RoutingTable[i].len);
-		if(tmpMatch > maxMatch){
+		// ignore entries with metric of 16
+		if(tmpMatch > maxMatch && RoutingTable[i].metric < 16){
 			maxMatch = tmpMatch;
 			matchIndex = i;
 		}

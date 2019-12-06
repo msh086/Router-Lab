@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 
 extern bool validateIPChecksum(uint8_t *packet, size_t len);
 extern void update(bool insert, const RoutingTableEntry& entry);
@@ -13,6 +14,7 @@ extern bool forward(uint8_t *packet, size_t len);
 extern bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output);
 extern uint32_t assemble(const RipPacket *rip, uint8_t *buffer);
 extern uint16_t ComputeChecksum(uint8_t *packet, size_t len);
+extern std::vector<RoutingTableEntry> RoutingTable;
 
 uint32_t countLeadingOnes(uint32_t val){
   uint32_t ans = 0;
@@ -55,6 +57,8 @@ uint8_t output[2048];
 in_addr_t addrs[N_IFACE_ON_BOARD] = {0x0203a8c0, 0x0104a8c0, 0x0102000a,
                                      0x0103000a};
 
+bool enables[N_IFACE_ON_BOARD] = {true, true, false, false};
+
 // 0: 192.168.3.1 R1
 // 1: 192.168.4.2 R2
 // 2: 0.0.0.0 none
@@ -84,16 +88,21 @@ void confIPHeader(uint32_t src_addr, uint32_t dst_addr, uint8_t ttl, uint32_t ri
   // if you don't want to calculate udp checksum, set it to zero
 }
 
-void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, uint32_t src_mac, uint32_t if_index, uint8_t ttl){
+/**
+ * Send the whole RoutingTable
+ * Split horizon is used
+ */
+void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32_t if_index, uint8_t ttl){
   // only need to respond to whole table requests in the lab
   RipPacket resp;
   int pos = 0;
   for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
-    convertRoutingEntryToRipEntry(*it, resp.entries[pos]);
-    if(it->nexthop == src_addr) // split horizon
-      resp.entries[pos].metric = 16;
-    pos++;
+    if(it->nexthop != dst_addr) // split horizon
+      convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
   }
+  // no entry is left after performing split horizon, no need to send
+  if(pos == 0)
+    return;
   resp.numEntries = pos;
   resp.command = 2; // response
   // assemble rip
@@ -104,10 +113,67 @@ void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, uint32_t src_mac, uint
   HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
 }
 
+/**
+ * For every entry in RoutingTable, this function checks:
+ * -if the entry's deletion timer is due, remove it from table
+ * -otherwise, if the entry times out, change its metric to 16 and mark it as changed
+ */
+void refreshRoutingTable(){
+  uint64_t currentTime = HAL_GetTicks();
+  int total = RoutingTable.size();
+  int iter = 0;
+  while(iter < total){
+    // deletion
+    if(currentTime - RoutingTable[i].timestamp > 300 * 1000){
+      RoutingTable[i] = RoutingTable[total - 1];
+      total--;
+      // iter is unchanged, since element at iter is a new one
+      continue;
+    }
+    // timeout
+    if(currrentTime - RoutingTable[i].timestamp > 180 * 1000){
+      RoutingTable[i].metric = 16;
+      RoutingTable[i].change_flag = 1;
+    }
+    iter++;
+  }
+  // remove deleted entries
+  for(int i = RoutingTable.size(); i > total; i--)
+    RoutingTable.pop_back();
+}
 
+/**
+ * Clear all change flags in RoutingTable
+ */
+void clearChangeFlag(){
+  for(auto it = RoutingTable.begin(); it != RoutingTable.end(); it++)
+    it->change_flag = 0;
+}
 
-void sendUpdated(uint32_t src_addr, uint32_t dst_addr, uint32_t src_mac, uint32_t if_index, uint8_t ttl){
-  
+/**
+ * Send all entries marked as changed in a triggered update
+ * If at least one entry is marked as changed, send packet and return true
+ * else return false
+ * Note: this function doesn't change the content of RoutingTable
+ */
+bool sendUpdated(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32_t if_index, uint8_t ttl){
+  RipPacket resp;
+  int pos = 0;
+  for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
+    if(it->change_flag && it->nexthop != dst_addr)
+      convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
+  }
+  if(pos == 0)
+    return false;
+  resp.numEntries = pos;
+  resp.command = 2;
+  // assemble rip
+  uint32_t rip_len = assemble(&resp, output + 20 + 8);
+  // config IP header
+  confIPHeader(src_addr, dst_addr, ttl, rip_len);
+  // send it back
+  HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
+  return true;
 }
 
 int main(int argc, char *argv[]) {
@@ -116,6 +182,8 @@ int main(int argc, char *argv[]) {
   if (res < 0) {
     return res;
   }
+  
+  srand(time.time(0));
 
   // 0b. Add direct routes
   // For example:
@@ -140,15 +208,44 @@ int main(int argc, char *argv[]) {
   memset(output, 0, sizeof(output));
   
   uint64_t last_time = 0;
+  // timer for triggered update
+  uint64_t triggered_update = 0;
   while (1) {
     uint64_t time = HAL_GetTicks();
+    bool surpressTriggeredUpdate = false;
     if (time > last_time + 30 * 1000) {
       // What to do?
       // send complete routing table to every interface
       // ref. RFC2453 3.8
+      macaddr_t mac_addr;
+      for(int i = 0; i < N_IFACE_ON_BOARD; i++){
+        if(enables[i] && HAL_ArpGetMacAddress(i, neighbors[i], &mac_addr))
+          sendWholeTable(addrs[i], MULTICAST_ADDR, mac_addr, i, 1);
+      }
+      clearChangeFlag();
       printf("30s Timer\n");
       last_time = time;
+      // supress triggered update for 1 - 5 seconds
+      triggered_update = last_time + (rand() % 5 + 1) * 1000;
     }
+    
+    // send triggered update, when cool down is ready and no multicast is pending in 3 seconds
+    // only triggered update is restricted by such kind of cool down
+    // reception of IP packet is not influenced
+    if(time > triggered_update && time < last_time + 27 * 1000){
+      bool send_res = false;
+      macaddr_t mac_addr;
+      for(int i = 0; i < N_IFACE_ON_BOARD; i++){
+        if(enables[i] && HAL_ArpGetMacAddress(i, neighbors[i], &mac_addr)){
+          if(sendUpdated(addrs[i], MULTICAST_ADDR, mac_addr, i, 1)
+            send_res = true;
+        }
+      }
+      clearChangeFlag();
+      if(send_res)
+        triggered_update = time + (rand() % 5 + 1) * 1000;
+    }
+    
 
     int mask = (1 << N_IFACE_ON_BOARD) - 1;
     macaddr_t src_mac;
@@ -209,7 +306,7 @@ int main(int argc, char *argv[]) {
             continue;
           // ignore packets from the router itself
           for(int i = 0; i < N_IFACE_ON_BOARD; i++)
-            if(memcmp(addrs + i, packet + 12, sizeof(uint32_t) == 0)
+            if(memcmp(addrs + i, packet + 12, sizeof(uint32_t)) == 0)
               continue;
           // update begin
           RoutingTableEntry rte;
@@ -224,7 +321,6 @@ int main(int argc, char *argv[]) {
           // new metric = ?
           // update metric, if_index, nexthop
           // what is missing from RoutingTableEntry?
-          // TODO: use query and update
           // triggered updates? ref. RFC2453 3.10.1
         }
       }
