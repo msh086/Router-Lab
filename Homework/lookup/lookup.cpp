@@ -6,6 +6,8 @@
 
 std::vector<RoutingTableEntry> RoutingTable;
 
+bool hasUpdate = false;
+
 uint32_t masks[33] = {0x0,
 	0x1, 0x3, 0x7, 0xf, 
 	0x1f, 0x3f, 0x7f, 0xff, 
@@ -42,7 +44,10 @@ uint32_t masks[33] = {0x0,
 void update(bool insert, const RoutingTableEntry& entry) {
 	int length = RoutingTable.size();
 	for(int i = 0; i < length; i++){
-		if(RoutingTable[i].addr == entry.addr && RoutingTable[i].len == entry.len){
+		if(RoutingTable[i].addr == entry.addr && RoutingTable[i].len == entry.len){ // skip direct networks
+			// direct networks should never be updated or deleted
+			if(RoutingTable[i].nexthop == 0)
+				return;
 			if(insert){
 				// the same route path.
 				if(RoutingTable[i].nexthop == entry.nexthop){
@@ -52,7 +57,7 @@ void update(bool insert, const RoutingTableEntry& entry) {
 						// if the new entry marks the route as unreachable
 						// timeout immediately and enter deletion
 						if(entry.metric == 16)
-							RoutingTable[i].timestamp -= 180 * 1000;
+							RoutingTable[i].timestamp -= TIMEOUT_SEC * 1000;
 					}
 					// simply reset timer without setting the change flag
 					// if already unreachable, don't reset timer
@@ -65,8 +70,11 @@ void update(bool insert, const RoutingTableEntry& entry) {
 				// from different router but have same metric
 				// if the existing entry is halfway to timeout, use the newer one
 				// if already unreachable, leave it alone
-				else if(entry.metric != 16 && entry.timestamp - RoutingTable[i].timestamp > 90 * 1000)
+				else if(entry.metric != 16 && entry.timestamp - RoutingTable[i].timestamp > TIMEOUT_SEC / 2 * 1000)
 					RoutingTable[i] = entry;
+				
+				if(RoutingTable[i].change_flag)
+					hasUpdate = true;
 			}
 			else
 				RoutingTable.erase(RoutingTable.begin() + i);
@@ -74,8 +82,15 @@ void update(bool insert, const RoutingTableEntry& entry) {
 		}
 	}
 	// ignore entry with metric of 16, since it means unreachable
-	if(insert && entry.metric < 16)
+	if(insert && entry.metric < 16){
 		RoutingTable.push_back(entry);
+		printf("Add RTE: %d.%d.%d.%d\n",
+			entry.addr & 0xff, 
+			(entry.addr >> 8) & 0xff, 
+			(entry.addr >> 16) & 0xff,
+			entry.addr >> 24);
+		hasUpdate = true;
+	}
 }
 
 uint8_t CommonPrefixLength(uint32_t addr1, uint32_t addr2, int len){

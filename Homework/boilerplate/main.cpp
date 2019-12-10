@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <vector>
+#include <ctime>
 
 extern bool validateIPChecksum(uint8_t *packet, size_t len);
 extern void update(bool insert, const RoutingTableEntry& entry);
@@ -13,13 +14,14 @@ extern bool query(uint32_t addr, uint32_t *nexthop, uint32_t *if_index);
 extern bool forward(uint8_t *packet, size_t len);
 extern bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output);
 extern uint32_t assemble(const RipPacket *rip, uint8_t *buffer);
-extern uint16_t ComputeChecksum(uint8_t *packet, size_t len);
+extern uint16_t ComputeChecksum(uint8_t *packet, size_t halfWords, size_t checkum_index);
 extern std::vector<RoutingTableEntry> RoutingTable;
+extern bool hasUpdate;
 
-uint32_t countLeadingOnes(uint32_t val){
+uint32_t countTrailingingOnes(uint32_t val){
   uint32_t ans = 0;
   while(val){
-    val <<= 1;
+    val >>= 1;
     ans++;
   }
   return ans;
@@ -27,17 +29,22 @@ uint32_t countLeadingOnes(uint32_t val){
 
 void convertRoutingEntryToRipEntry(const RoutingTableEntry& rte, RipEntry& re){
   re.addr = rte.addr;
-  re.mask = 0xffffffff << (32 - rte.len);
+  // RipEntry.mask is store in big endian
+  re.mask = 0xffffffff >> (32 - rte.len);
   re.nexthop = rte.nexthop;
-  re.metric = rte.metric;
+  // RipEntry.metric is stored in big endian
+  // while RoutingTableEntry.metric is stored in little endian
+  re.metric = rte.metric << 24; 
 }
 
 void convertRipEntryToRoutingEntry(const RipEntry& re, RoutingTableEntry& rte, uint32_t if_index, uint32_t src_addr){
   rte.addr = re.addr;
-  rte.len = countLeadingOnes(re.mask);
+  rte.len = countTrailingingOnes(re.mask);
   rte.if_index = if_index;
   rte.nexthop = src_addr;
-  rte.metric = re.metric;
+  // RipEntry.metric is stored in big endian
+  // while RoutingTableEntry.metric is stored in little endian
+  rte.metric = re.metric >> 24;
   rte.timestamp = HAL_GetTicks();
   rte.change_flag = 1;
 }
@@ -65,7 +72,7 @@ bool enables[N_IFACE_ON_BOARD] = {true, true, false, false};
 // 3: 0.0.0.0 none
 in_addr_t neighbors[N_IFACE_ON_BOARD] = {0x0103a8c0, 0x0204a8c0, 0x0, 0x0};
 
-void confIPHeader(uint32_t src_addr, uint32_t dst_addr, uint8_t ttl, uint32_t rip_len){
+void confIPHeader(uint32_t src_addr, uint32_t dst_addr, uint8_t ttl, uint32_t rip_len, bool isRequest = false){
   // Version = 4(IP), IHL = 5
   output[0] = 0x45;
   // ttl is not fixed
@@ -75,17 +82,72 @@ void confIPHeader(uint32_t src_addr, uint32_t dst_addr, uint8_t ttl, uint32_t ri
   // dst addr
   *((uint32_t*)(output + 16)) = dst_addr;
   // UDP
-  // port = 520
+  // src port = 520
   output[20] = 0x02;
   output[21] = 0x08;
+  if(!isRequest){
+  // dst port = 520
+    output[22] = 0x02;
+    output[23] = 0x08;
+  }
+  else
+    output[22] = output[23] = 0;
+  // UDP length, including UDP header and payload
+  writeHalf(output + 24, 8 + rip_len);
+  // if you don't want to calculate udp checksum, set it to zero
   // write the total length of IP packet into IP header
   // length of IP header = 20B, length of UDP header = 8B
-  writeHalf(output + 28, 28 + rip_len);
-  // protocol field, use the same protocol with input
-  output[9] = packet[9];
+  writeHalf(output + 2, 28 + rip_len);
+  // protocol field, use UDP
+  output[9] = 0x11;
   // checksum calculation for ip and udp
-  *((uint16_t*)(output + 10)) = ComputeChecksum(output, 0); // len is used so 0 is fine
-  // if you don't want to calculate udp checksum, set it to zero
+  // IHL is always 5, so halfWords = 10; 5 is the checksum pos for IP header
+  *((uint16_t*)(output + 10)) = ComputeChecksum(output, 10, 5); 
+}
+
+uint32_t confICMP(uint32_t src_addr, uint32_t dst_addr, uint8_t ttl, uint8_t ICMP_type, uint8_t ICMP_code){
+  // Version = 4(IP), IHL = 5
+  output[0] = 0x45;
+  // ttl is not fixed
+  output[8] = ttl;
+  // src addr
+  *((uint32_t*)(output + 12)) = src_addr;
+  // dst addr
+  *((uint32_t*)(output + 16)) = dst_addr;
+  // protocol, use ICMP
+  output[9] = 0x01;
+  // ICMP header
+  output[20] = ICMP_type; // type
+  output[21] = ICMP_code; // code
+  output[24] = output[25] = output[26] = output[27] = 0; // unused
+  // total length, IP header = 20B, ICMP header = 8 + (20 + <= 64)
+  uint16_t inputDatagramLength = (((uint16_t)packet[2]) << 8) + packet[3] - 20;
+  if(inputDatagramLength > 64)
+    inputDatagramLength = 64;
+  memcpy(output + 28, packet, inputDatagramLength);
+  memset(output + 28 + inputDatagramLength, 0, inputDatagramLength % 2); // pad to complete half words
+  // checksum for ICMP header
+  *((uint16_t*)(output + 22)) = ComputeChecksum(output + 20, (8 + 20 + inputDatagramLength + 1) >> 1, 1);
+  // compute IP packet length
+  writeHalf(output + 2, 20 + 8 + inputDatagramLength + 20);
+  // checksum for IP header
+  *((uint16_t*)(output + 10)) = ComputeChecksum(output, 10, 5); 
+  return inputDatagramLength + 20 + 8 + 20;
+}
+
+void sendRequest(uint32_t src_addr, uint32_t dst_addr, macaddr_t dst_mac, uint32_t if_index, uint8_t ttl){
+  RipPacket req;
+  // when family == 0 and metric == 16, it means that whole table should be sent
+  req.entries[0].addr = 0;
+  req.entries[0].mask = 0;
+  req.entries[0].nexthop = 0;
+  req.entries[0].metric = 16 << 24;
+  req.numEntries = 1;
+  req.command = 1; // request
+  uint32_t rip_len = assemble(&req, output + 20 + 8);
+  confIPHeader(src_addr, dst_addr, ttl, rip_len, true);
+  HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, dst_mac);
+  printf("request sent\n");
 }
 
 /**
@@ -97,12 +159,14 @@ void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uin
   RipPacket resp;
   int pos = 0;
   for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
-    if(it->nexthop != dst_addr) // split horizon
+    if(it->if_index != if_index) // split horizon
       convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
   }
   // no entry is left after performing split horizon, no need to send
-  if(pos == 0)
+  if(pos == 0){
+    printf("nothing to send after split horizon");
     return;
+  }
   resp.numEntries = pos;
   resp.command = 2; // response
   // assemble rip
@@ -111,6 +175,7 @@ void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uin
   confIPHeader(src_addr, dst_addr, ttl, rip_len);
   // send it back
   HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
+  printf("whole table sent\n");
 }
 
 /**
@@ -123,23 +188,28 @@ void refreshRoutingTable(){
   int total = RoutingTable.size();
   int iter = 0;
   while(iter < total){
+    if(RoutingTable[iter].nexthop == 0){ // direct network, should never be deleted or timed out
+      iter++;
+      continue;
+    }
     // deletion
-    if(currentTime - RoutingTable[i].timestamp > 300 * 1000){
-      RoutingTable[i] = RoutingTable[total - 1];
+    if(currentTime - RoutingTable[iter].timestamp > DELETION_SEC * 1000){
+      RoutingTable[iter] = RoutingTable[total - 1];
       total--;
       // iter is unchanged, since element at iter is a new one
       continue;
     }
     // timeout
-    if(currrentTime - RoutingTable[i].timestamp > 180 * 1000){
-      RoutingTable[i].metric = 16;
-      RoutingTable[i].change_flag = 1;
+    if(currentTime - RoutingTable[iter].timestamp > TIMEOUT_SEC * 1000){
+      RoutingTable[iter].metric = 16;
+      RoutingTable[iter].change_flag = 1;
     }
     iter++;
   }
   // remove deleted entries
   for(int i = RoutingTable.size(); i > total; i--)
     RoutingTable.pop_back();
+  hasUpdate = false;
 }
 
 /**
@@ -160,7 +230,7 @@ bool sendUpdated(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32
   RipPacket resp;
   int pos = 0;
   for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
-    if(it->change_flag && it->nexthop != dst_addr)
+    if(it->change_flag && it->if_index != if_index)
       convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
   }
   if(pos == 0)
@@ -173,6 +243,7 @@ bool sendUpdated(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32
   confIPHeader(src_addr, dst_addr, ttl, rip_len);
   // send it back
   HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
+  printf("updated sent\n");
   return true;
 }
 
@@ -183,7 +254,7 @@ int main(int argc, char *argv[]) {
     return res;
   }
   
-  srand(time.time(0));
+  srand(time(0));
 
   // 0b. Add direct routes
   // For example:
@@ -200,6 +271,7 @@ int main(int argc, char *argv[]) {
         .metric = 1,      // need only 1 hop for direct connected networks
         .timestamp = HAL_GetTicks(), // init time
         .change_flag = 0  // TODO: should the flag be 1?
+        //.learnt_from_if = N_IFACE_ON_BOARD // learnt from no one
     };
     update(true, entry);
   }
@@ -207,43 +279,71 @@ int main(int argc, char *argv[]) {
   // init output buffer
   memset(output, 0, sizeof(output));
   
+  for(int i = 0; i < N_IFACE_ON_BOARD; i++){
+    if(!enables[i])
+      continue;
+    macaddr_t mac_addr;
+    if(HAL_ArpGetMacAddress(i, MULTICAST_ADDR, mac_addr) == 0)
+      sendRequest(addrs[i], MULTICAST_ADDR, mac_addr, i, 1);
+    else
+      printf("get multicast address error when sending request\n");
+  }
+  
+  // for debug
+  {
+    //macaddr_t mac_addr;
+    //HAL_ArpGetMacAddress(0, MULTICAST_ADDR, mac_addr);
+    // sendWholeTable(addrs[0], MULTICAST_ADDR, mac_addr, 0, 1);
+    // ICMP debug
+    //HAL_SendIPPacket(0, output, confICMP(addrs[0], MULTICAST_ADDR, 64, 0xb, 0x0),
+    //          mac_addr);
+    //printf("ICMP debug\n");
+  }
   uint64_t last_time = 0;
   // timer for triggered update
   uint64_t triggered_update = 0;
+  // timer for refreshing table
+  uint64_t refresh_time = 0;
   while (1) {
     uint64_t time = HAL_GetTicks();
-    bool surpressTriggeredUpdate = false;
-    if (time > last_time + 30 * 1000) {
+    // bool surpressTriggeredUpdate = false;
+    if (time > last_time + MULTICAST_SEC * 1000) {
       // What to do?
       // send complete routing table to every interface
       // ref. RFC2453 3.8
       macaddr_t mac_addr;
       for(int i = 0; i < N_IFACE_ON_BOARD; i++){
-        if(enables[i] && HAL_ArpGetMacAddress(i, neighbors[i], &mac_addr))
+        if(!enables[i])
+          continue;
+        if(HAL_ArpGetMacAddress(i, MULTICAST_ADDR, mac_addr) == 0)
           sendWholeTable(addrs[i], MULTICAST_ADDR, mac_addr, i, 1);
+        else
+          printf("get multicast address error\n");
       }
       clearChangeFlag();
-      printf("30s Timer\n");
+      printf("%ds Timer\n", MULTICAST_SEC);
       last_time = time;
       // supress triggered update for 1 - 5 seconds
-      triggered_update = last_time + (rand() % 5 + 1) * 1000;
+      // triggered_update = last_time + TRIGGERED_CD * 1000;
+    }
+    
+    if(time > refresh_time + REFRESH_SEC * 1000){
+      refreshRoutingTable();
+      refresh_time += REFRESH_SEC * 1000;
     }
     
     // send triggered update, when cool down is ready and no multicast is pending in 3 seconds
     // only triggered update is restricted by such kind of cool down
     // reception of IP packet is not influenced
-    if(time > triggered_update && time < last_time + 27 * 1000){
-      bool send_res = false;
+    if(time > triggered_update && hasUpdate){ //&& time < last_time + 27 * 1000){
       macaddr_t mac_addr;
       for(int i = 0; i < N_IFACE_ON_BOARD; i++){
-        if(enables[i] && HAL_ArpGetMacAddress(i, neighbors[i], &mac_addr)){
-          if(sendUpdated(addrs[i], MULTICAST_ADDR, mac_addr, i, 1)
-            send_res = true;
+        if(enables[i] && HAL_ArpGetMacAddress(i, MULTICAST_ADDR, mac_addr) == 0){
+          sendUpdated(addrs[i], MULTICAST_ADDR, mac_addr, i, 1);
         }
       }
       clearChangeFlag();
-      if(send_res)
-        triggered_update = time + (rand() % 5 + 1) * 1000;
+      triggered_update = time + TRIGGERED_CD * 1000;
     }
     
 
@@ -312,8 +412,8 @@ int main(int argc, char *argv[]) {
           RoutingTableEntry rte;
           for(int i = 0; i < rip.numEntries; i++){
             // update metric
-            if(rip.entries[i].metric < 16)
-              rip.entries[i].metric++;
+            if(rip.entries[i].metric >> 24 < 16)
+              rip.entries[i].metric += 1 << 24;
             convertRipEntryToRoutingEntry(rip.entries[i], rte, if_index, src_addr);
             update(true, rte);
           }
@@ -345,7 +445,13 @@ int main(int argc, char *argv[]) {
           if(output[8] != 0x0)
             HAL_SendIPPacket(dest_if, output, res, dest_mac);
           else{
-            // TODO: ICMP Time Exceeded
+            // ICMP Time Exceeded
+            // type = 11(Time Exceeded), code = 0x0(ttl exceeded)
+            HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0xb, 0x0),
+              dst_mac);
+            // send a RIP packet after an ICMP packet can lead to error due to none-zero fields in output buffer
+            memset(output, 0, sizeof(output));
+            printf("ttl exceeded\n");
           }
         } else {
           // not found
@@ -355,6 +461,10 @@ int main(int argc, char *argv[]) {
       } else {
         // not found
         // optionally you can send ICMP Host Unreachable
+        // type = 0x3(Destination unreachable), code = 0x1(host unreachable)
+        HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0x3, 0x1),
+          dst_mac);
+        memset(output, 0, sizeof(output));
         printf("IP not found for %x\n", src_addr);
       }
     }

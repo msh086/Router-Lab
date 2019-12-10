@@ -3,41 +3,47 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-uint32_t BEtoLE(const uint8_t* ptr){
-	uint32_t ans = ptr[0];
-	for(int i = 0; i < 3; i++){
+/**
+ * ARM uses little endian
+ * load 0x01020304 from packet will result in 0x04030201
+ */
+uint32_t loadBigEndian(const uint8_t* src){
+	return *(const uint32_t*)src;
+}
+
+/**
+ * load little endian data from packet, 0x01020304 will result in 0x01020304
+ */
+uint32_t loadLittleEndian(const uint8_t* src){
+	uint32_t ans = 0;
+	for(int i = 0; i < 4; i++){
 		ans <<= 8;
-		ptr++;
-		ans |= ptr[0];
+		ans |= *src;
+		src++;
 	}
 	return ans;
 }
 
+void saveBigEndian(uint8_t* dst, uint32_t data){
+	*(uint32_t*)dst = data;
+}
+
+void saveLittleEndian(uint8_t* dst, uint32_t data){
+	dst += 3;
+	for(int i = 3; i >= 0; i--){
+		*dst = data & 0xff;
+		dst--;
+		data >>= 8;
+	}
+}
+
 bool checkMask(const uint8_t* ptr){
-	uint32_t mask = BEtoLE(ptr);
+	uint32_t mask = loadLittleEndian(ptr);
 	while(mask & 0x80000000)
 		mask <<= 1;
 	return mask == 0;
 }
 
-uint32_t decodeBE(const uint8_t* ptr){
-	ptr += 3;
-	uint32_t ans = *ptr;
-	for(int i = 0; i < 3; i++){
-		ans <<= 8;
-		ptr--;
-		ans |= *ptr;
-	}
-	return ans;
-}
-
-void encodeBE(uint8_t* dst, uint32_t value){
-	for(int i = 0; i < 4; i++){
-		*dst = value & 0xff;
-		dst++;
-		value >>= 8;
-	}
-}
 
 /*
   在头文件 rip.h 中定义了如下的结构体：
@@ -119,10 +125,10 @@ bool disassemble(const uint8_t *packet, uint32_t len, RipPacket *output) {
 		if(ptr[16] != 0 || ptr[17] != 0 || ptr[18] != 0 || ptr[19] == 0 || ptr[19] > 16) // invalid Metric
 			return false;
 		uint32_t* ptr32 = (uint32_t*)ptr;
-		output->entries[pos].addr = decodeBE(ptr + 4);
-		output->entries[pos].mask = decodeBE(ptr + 8);
-		output->entries[pos].nexthop = decodeBE(ptr + 12);
-		output->entries[pos].metric = decodeBE(ptr + 16);
+		output->entries[pos].addr = loadBigEndian(ptr + 4);
+		output->entries[pos].mask = loadBigEndian(ptr + 8);
+		output->entries[pos].nexthop = loadBigEndian(ptr + 12);
+		output->entries[pos].metric = loadBigEndian(ptr + 16);
 		pos++;
 		ptr += 20; // 5 words
 		totalLength -= 20;
@@ -158,13 +164,13 @@ uint32_t assemble(const RipPacket *rip, uint8_t *buffer) {
 		ptr[2] = ptr[3] = 0;
 		uint32_t* ptr32 = (uint32_t*)ptr;
 		// set IP
-		encodeBE(ptr + 4, rip->entries[i].addr);
+		saveBigEndian(ptr + 4, rip->entries[i].addr);
 		// set mask
-		encodeBE(ptr + 8, rip->entries[i].mask);
+		saveBigEndian(ptr + 8, rip->entries[i].mask);
 		// set nexthop
-		encodeBE(ptr + 12, rip->entries[i].nexthop);
+		saveBigEndian(ptr + 12, rip->entries[i].nexthop);
 		// set metric
-		encodeBE(ptr + 16, rip->entries[i].metric);
+		saveBigEndian(ptr + 16, rip->entries[i].metric);
 		
 		ptr += 20; // 5 words
 	}

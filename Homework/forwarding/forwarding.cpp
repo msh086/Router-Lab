@@ -1,13 +1,15 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-uint16_t ComputeChecksum(uint8_t *packet, size_t len){
+/**
+ * Compute checksum starting from packet, with halfWords halfwords, skip the halfword at index checksum_index
+ */
+uint16_t ComputeChecksum(uint8_t *packet, size_t halfWords, size_t checksum_index){
 	uint32_t ans = 0;
 	uint32_t limit = 1 << 16;
 	uint16_t* iter = (uint16_t*)packet;
-	int halfWords = (packet[0] & 0xf) << 1;
 	for(int i = 0; i < halfWords; i++){
-	  if(i == 5) // the checksum
+	  if(i == checksum_index) // the checksum
 		  continue;
 	  ans += iter[i];
 	  if(ans >= limit)
@@ -28,10 +30,10 @@ uint16_t ComputeChecksum(uint8_t *packet, size_t len){
  */
 bool forward(uint8_t *packet, size_t len) {
 	uint16_t* iter = (uint16_t*)packet;
-	if(ComputeChecksum(packet, len) != iter[5])
+	if(ComputeChecksum(packet, (packet[0] & 0xf) << 1, 5) != iter[5])
 		return false;
 	packet[8]--; // update TTL
-	iter[5] = ComputeChecksum(packet, len); // update checksum
+	iter[5] = ComputeChecksum(packet, (packet[0] & 0xf) << 1, 5); // update checksum
 	return true;
 }
 
