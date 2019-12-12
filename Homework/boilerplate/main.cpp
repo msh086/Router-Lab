@@ -17,6 +17,7 @@ extern uint32_t assemble(const RipPacket *rip, uint8_t *buffer);
 extern uint16_t ComputeChecksum(uint8_t *packet, size_t halfWords, size_t checkum_index);
 extern std::vector<RoutingTableEntry> RoutingTable;
 extern bool hasUpdate;
+extern void printTable();
 
 uint32_t countTrailingingOnes(uint32_t val){
   uint32_t ans = 0;
@@ -299,6 +300,7 @@ int main(int argc, char *argv[]) {
     //          mac_addr);
     //printf("ICMP debug\n");
   }
+  
   uint64_t last_time = 0;
   // timer for triggered update
   uint64_t triggered_update = 0;
@@ -320,6 +322,7 @@ int main(int argc, char *argv[]) {
         else
           printf("get multicast address error\n");
       }
+      printTable();
       clearChangeFlag();
       printf("%ds Timer\n", MULTICAST_SEC);
       last_time = time;

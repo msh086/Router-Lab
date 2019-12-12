@@ -6,6 +6,11 @@
 
 std::vector<RoutingTableEntry> RoutingTable;
 
+void printTable(){
+	for(auto it = RoutingTable.begin(); it != RoutingTable.end(); it++)
+		it->print();
+}
+
 bool hasUpdate = false;
 
 uint32_t masks[33] = {0x0,

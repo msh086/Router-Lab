@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdio.h>
 
 /**
  * Interval for multicast whole table
@@ -30,4 +31,20 @@ typedef struct {
     uint64_t timestamp; // to get rid of entries that haven't been updated for too long
     uint32_t change_flag; // if the entry has been changed
     //uint32_t learnt_from_if; // the if index this entry is learnt from, for split horizon
+    void print(){
+        // print IP address
+        printf("%u.%u.%u.%u", addr & 0xff, (addr >> 8) & 0xff, (addr >> 16) & 0xff, addr >> 24);
+        // print mask
+        printf("/%u, ", len);
+        // print interface
+        printf("IF %u, ", if_index);
+        // print nextHop
+        printf("next hop: %u.%u.%u.%u, ", nexthop & 0xff, (nexthop >> 8) & 0xff, (nexthop >> 16) & 0xff, nexthop >> 24);
+        // print metric
+        printf("metric: %u, ", metric);
+        // print timestamp
+        printf("timestamp: %lu, ", timestamp);
+        // print change flag
+        printf("change flag: %u\n", change_flag);
+    }
 } RoutingTableEntry;
