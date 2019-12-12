@@ -210,7 +210,6 @@ void refreshRoutingTable(){
   // remove deleted entries
   for(int i = RoutingTable.size(); i > total; i--)
     RoutingTable.pop_back();
-  hasUpdate = false;
 }
 
 /**
@@ -219,6 +218,7 @@ void refreshRoutingTable(){
 void clearChangeFlag(){
   for(auto it = RoutingTable.begin(); it != RoutingTable.end(); it++)
     it->change_flag = 0;
+  hasUpdate = false;
 }
 
 /**

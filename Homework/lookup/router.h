@@ -43,7 +43,7 @@ typedef struct {
         // print metric
         printf("metric: %u, ", metric);
         // print timestamp
-        printf("timestamp: %lu, ", timestamp);
+        printf("timestamp: %llu, ", timestamp);
         // print change flag
         printf("change flag: %u\n", change_flag);
     }

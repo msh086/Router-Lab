@@ -44,3 +44,13 @@ sudo ip netns exec PC2 ip addr add 192.168.5.1/24 dev from-pc2
 # add static routing entries
 sudo ip netns exec PC1 ip route add default via 192.168.1.1 dev from-pc1
 sudo ip netns exec PC2 ip route add default via 192.168.5.2
+
+# fix TCP checksum
+sudo ip netns exec PC1 ethtool -K from-pc1 tx off
+sudo ip netns exec R1 ethtool -K to-pc1 tx off
+sudo ip netns exec R1 ethtool -K veth1 tx off
+sudo ip netns exec R2 ethtool -K eth1 tx off
+sudo ip netns exec R2 ethtool -K eth2 tx off
+sudo ip netns exec R3 ethtool -K veth3 tx off
+sudo ip netns exec R3 ethtool -K to-pc2 tx off
+sudo ip netns exec PC2 ethtool -K from-pc2 tx off
