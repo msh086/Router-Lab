@@ -459,7 +459,7 @@ int main(int argc, char *argv[]) {
         } else {
           // not found
           // you can drop it
-          printf("ARP not found for %x\n", nexthop);
+          printf("ARP not found for nexthop %x\n", nexthop);
         }
       } else {
         // not found
