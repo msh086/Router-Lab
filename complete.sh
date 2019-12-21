@@ -15,8 +15,8 @@ sudo ip netns exec R3 ip link set veth3 up
 sudo ip netns exec R2 ip link set eth1 up
 sudo ip netns exec R2 ip link set eth2 up
 sudo ip netns exec R1 ip addr add 192.168.3.1/24 dev veth1
-sudo ip netns exec R2 ip addr add 192.168.3.2/24 dev eth1
-sudo ip netns exec R2 ip addr add 192.168.4.1/24 dev eth2
+# sudo ip netns exec R2 ip addr add 192.168.3.2/24 dev eth1
+# sudo ip netns exec R2 ip addr add 192.168.4.1/24 dev eth2
 sudo ip netns exec R3 ip addr add 192.168.4.2/24 dev veth3
 # allow R1 and R3 to forward ICMP
 sudo ip netns exec R1 bash -c 'echo 1 > /proc/sys/net/ipv4/conf/all/forwarding'

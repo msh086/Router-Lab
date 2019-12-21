@@ -51,8 +51,8 @@ void convertRipEntryToRoutingEntry(const RipEntry& re, RoutingTableEntry& rte, u
 }
 
 void writeHalf(uint8_t* dst, uint16_t val){
-  *dst = val >> 8;
-  *(dst+1) = val & 0xff;
+  *dst = uint8_t(val >> 8);
+  *(dst+1) = uint8_t(val & 0xff);
 }
 
 uint8_t packet[2048];
