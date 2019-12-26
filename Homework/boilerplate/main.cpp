@@ -160,8 +160,10 @@ void sendRequest(uint32_t src_addr, uint32_t dst_addr, macaddr_t dst_mac, uint32
 void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32_t if_index, uint8_t ttl){
   // only need to respond to whole table requests in the lab
   RipPacket resp;
+  auto it = RoutingTable.begin();
+  while(it != RoutingTable.end()){
   int pos = 0;
-  for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
+  for(; pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
     if(it->if_index != if_index) // split horizon
       convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
   }
@@ -178,6 +180,7 @@ void sendWholeTable(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uin
   confIPHeader(src_addr, dst_addr, ttl, rip_len);
   // send it back
   HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
+  }
   printf("whole table sent\n");
 }
 
@@ -231,8 +234,10 @@ void clearChangeFlag(){
  */
 bool sendUpdated(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32_t if_index, uint8_t ttl){
   RipPacket resp;
+  auto it = RoutingTable.begin();
+  while(it != RoutingTable.end()){
   int pos = 0;
-  for(auto it = RoutingTable.begin(); pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
+  for(; pos < RIP_MAX_ENTRY && it != RoutingTable.end(); it++){
     if(it->change_flag && it->if_index != if_index)
       convertRoutingEntryToRipEntry(*it, resp.entries[pos++]);
   }
@@ -246,6 +251,7 @@ bool sendUpdated(uint32_t src_addr, uint32_t dst_addr, macaddr_t src_mac, uint32
   confIPHeader(src_addr, dst_addr, ttl, rip_len);
   // send it back
   HAL_SendIPPacket(if_index, output, rip_len + 20 + 8, src_mac);
+  }
   printf("updated sent\n");
   return true;
 }
@@ -452,10 +458,10 @@ int main(int argc, char *argv[]) {
           else{
             // ICMP Time Exceeded
             // type = 11(Time Exceeded), code = 0x0(ttl exceeded)
-            HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0xb, 0x0),
-              dst_mac);
+            // HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0xb, 0x0),
+            //  dst_mac);
             // send a RIP packet after an ICMP packet can lead to error due to none-zero fields in output buffer
-            memset(output, 0, sizeof(output));
+            // memset(output, 0, sizeof(output));
             printf("ttl exceeded\n");
           }
         } else {
@@ -467,9 +473,9 @@ int main(int argc, char *argv[]) {
         // not found
         // optionally you can send ICMP Host Unreachable
         // type = 0x3(Destination unreachable), code = 0x1(host unreachable)
-        HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0x3, 0x1),
-          dst_mac);
-        memset(output, 0, sizeof(output));
+        //  HAL_SendIPPacket(if_index, output, confICMP(addrs[if_index], src_addr, 64, 0x3, 0x1),
+        //  dst_mac);
+        // memset(output, 0, sizeof(output));
         printf("IP not found for %x\n", src_addr);
       }
     }
